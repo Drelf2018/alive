@@ -2,10 +2,12 @@ package alive
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/axgle/mahonia"
 )
@@ -25,35 +27,85 @@ type Task struct {
 
 	// 输出模板
 	Format string `yaml:"format"`
+
+	// 重试间隔
+	Interval int64 `yaml:"interval"`
+
+	// 常规输出
+	Out io.Writer `yaml:"-"`
+
+	// 错误输出
+	Err io.Writer `yaml:"-"`
+}
+
+func (t *Task) Info(s string) (int, error) {
+	if t.Out == nil || t.Format == "" {
+		return 0, nil
+	}
+	return fmt.Fprintf(t.Out, t.Format, strings.TrimRight(enc.ConvertString(s), "\r\n"))
+}
+
+func (t *Task) Error(s string) (int, error) {
+	if t.Err == nil || t.Format == "" {
+		return 0, nil
+	}
+	return fmt.Fprintf(t.Err, t.Format, strings.TrimRight(enc.ConvertString(s), "\r\n"))
 }
 
 // 执行任务
-func (t Task) Run(output io.Writer) error {
-	cmd := exec.Command(t.Name, t.Args...)
+func (t Task) Run() error {
+	return t.RunWithContext(context.Background())
+}
+
+// 任务保活
+func (t Task) RunForever(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			err := t.RunWithContext(ctx)
+			if err != nil {
+				t.Error(err.Error())
+			}
+			time.Sleep(time.Duration(t.Interval) * time.Millisecond)
+		}
+	}
+}
+
+// 携带上下文执行任务
+func (t Task) RunWithContext(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, t.Name, t.Args...)
 	cmd.Dir = t.Dir
 
 	// 获取持续输出流
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
+	stdout, errPipe := cmd.StdoutPipe()
+	if errPipe != nil {
+		return errPipe
 	}
 
-	// 将 Stderr 合并到 Stdout
-	cmd.Stderr = cmd.Stdout
+	stderr, errPipe := cmd.StderrPipe()
+	if errPipe != nil {
+		return errPipe
+	}
 
 	// 启动命令
-	if err := cmd.Start(); err != nil {
-		return err
+	if errStart := cmd.Start(); errStart != nil {
+		return errStart
 	}
 
 	// 实时读取输出
-	scanner := bufio.NewScanner(stdout)
+	outScanner := bufio.NewScanner(stdout)
 	go func() {
-		if t.Format == "" {
-			t.Format = t.Dir + "> (" + t.Name + " " + strings.Join(t.Args, " ") + ") %s\n"
+		for outScanner.Scan() {
+			t.Info(outScanner.Text())
 		}
-		for scanner.Scan() {
-			fmt.Fprintf(output, t.Format, strings.TrimRight(enc.ConvertString(scanner.Text()), "\r\n"))
+	}()
+
+	errScanner := bufio.NewScanner(stderr)
+	go func() {
+		for errScanner.Scan() {
+			t.Error(errScanner.Text())
 		}
 	}()
 
