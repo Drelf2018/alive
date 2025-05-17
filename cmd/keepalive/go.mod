@@ -2,10 +2,8 @@ module github.com/Drelf2018/alive/cmd/keepalive
 
 go 1.18
 
-replace github.com/Drelf2018/alive => ../..
-
 require (
-	github.com/Drelf2018/alive v0.0.0-00010101000000-000000000000
+	github.com/Drelf2018/alive v0.1.0
 	github.com/Drelf2018/webhook v0.19.0
 	github.com/antonfisher/nested-logrus-formatter v1.3.1
 	github.com/sirupsen/logrus v1.9.3
