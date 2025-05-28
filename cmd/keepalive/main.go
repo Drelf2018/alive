@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
-	"time"
 
 	"github.com/Drelf2018/alive"
 	"github.com/Drelf2018/webhook/utils"
@@ -25,25 +23,72 @@ func (l LogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-var _ io.Writer = (LogWriter)(nil)
+func WriteYAML(path string, in any) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
-type Config struct {
-	Log   string       `yaml:"log"`
-	Env   []string     `yaml:"env"`
-	Tasks []alive.Task `yaml:"tasks"`
+	enc := yaml.NewEncoder(f)
+	defer enc.Close()
+
+	enc.SetIndent(2)
+	return enc.Encode(in)
 }
 
-func (cfg Config) Run(ctx context.Context, dir string) (cancel context.CancelFunc) {
-	if len(cfg.Tasks) == 0 {
-		return nil
-	}
-	if cfg.Log == "" {
-		cfg.Log = "logs/2006-01-02.log"
+func main() {
+	var cfgPath string
+	var logPath string
+
+	flag.StringVar(&cfgPath, "cfg", "config.yml", "configuration file path")
+	flag.StringVar(&logPath, "log", "logs/2006-01-02.log", "log file path")
+	flag.Parse()
+
+	if _, err := os.Stat(cfgPath); err != nil {
+		task := alive.Task{
+			Name:     "任务",
+			Desc:     "任务自身可以绑定命令，也可以在子任务集绑定更多任务，任务的工作目录、环境和输出模板会传递给子任务",
+			Env:      []string{"PYTHONIOENCODING=utf-8"},
+			Cmd:      "cmd",
+			Args:     []string{"/C", "echo", "Running!"},
+			Format:   "{{if ne .Dir \".\"}}{{.Dir}}{{end}}> {{.Cmd}}{{range .Args}} {{.}}{{end}}{{endl}}%s{{endl}}",
+			Interval: -1,
+			Tasks: []alive.Task{{
+				Name:     "python 脚本",
+				Desc:     "用命令行打印文本",
+				Dir:      "logs",
+				Env:      []string{"LOGURU_FORMAT={name}.{function}:{line} | {message}"},
+				Cmd:      "python",
+				Args:     []string{"-u", "-c", "print(\"Hello KeepAlive!\")"},
+				Delay:    1,
+				Interval: 2.5,
+			}},
+		}
+		err = WriteYAML(cfgPath, task)
+		if err != nil {
+			panic(err)
+		} else {
+			panic(fmt.Errorf("alive/cmd/keepalive: 请完善配置文件: %s", cfgPath))
+		}
 	}
 
-	ctx, cancel = context.WithCancel(ctx)
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		panic(err)
+	}
 
-	hook := &utils.DateHook{Format: cfg.Log}
+	var task alive.Task
+	err = yaml.Unmarshal(data, &task)
+	if err != nil {
+		panic(err)
+	}
+
+	if len(task.Tasks) == 0 {
+		return
+	}
+
+	hook := &utils.DateHook{Format: logPath}
 	logger := &logrus.Logger{
 		Out:   io.MultiWriter(hook, os.Stdout),
 		Hooks: make(logrus.LevelHooks),
@@ -57,80 +102,14 @@ func (cfg Config) Run(ctx context.Context, dir string) (cancel context.CancelFun
 	}
 	logger.AddHook(hook)
 
-	for _, task := range cfg.Tasks {
-		if task.Delay > 0 {
-			time.Sleep(time.Duration(1000*task.Delay) * time.Millisecond)
-		}
-		task.Dir = filepath.Join(dir, task.Dir)
-		task.Env = append(cfg.Env, task.Env...)
-		if task.Format == "" {
-			task.Format = "> " + task.Name + " " + strings.Join(task.Args, " ") + "\n%s\n"
-			if task.Dir != "." {
-				task.Format = task.Dir + task.Format
-			}
-		}
-		task.Out = LogWriter(logger.Info)
-		task.Err = LogWriter(logger.Error)
-		go task.RunForever(ctx)
-	}
-
-	return cancel
-}
-
-func WriteYAML(path string, in any) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
-	if err != nil {
-		return err
-	}
-	f.WriteString("# 时间单位为浮点数秒\n\n")
-	enc := yaml.NewEncoder(f)
-	enc.SetIndent(2)
-	err = enc.Encode(in)
-	if err1 := enc.Close(); err1 != nil && err == nil {
-		err = err1
-	}
-	if err2 := f.Close(); err2 != nil && err == nil {
-		err = err2
-	}
-	return err
-}
-
-func main() {
-	cfgPath := flag.String("cfg", "config.yml", "configuration file path")
-	flag.Parse()
-
-	if _, err := os.Stat(*cfgPath); err != nil {
-		cfg := Config{
-			Log: "logs/2006-01-02.log",
-			Env: []string{"PYTHONIOENCODING=utf-8"},
-			Tasks: []alive.Task{{
-				Dir:      "",
-				Env:      []string{"LOGURU_FORMAT={name}.{function}:{line} | {message}"},
-				Name:     "python",
-				Args:     []string{"-u", "-c", "print(\"Hello KeepAlive!\")"},
-				Delay:    0.5,
-				Interval: 2.5,
-			}}}
-		err = WriteYAML(*cfgPath, cfg)
-		if err != nil {
-			panic(err)
-		} else {
-			panic(fmt.Errorf("alive/cmd/keepalive: 请完善配置文件: %s", *cfgPath))
-		}
-	}
-
-	data, err := os.ReadFile(*cfgPath)
-	if err != nil {
-		panic(err)
-	}
-
-	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
-	if err != nil {
-		panic(err)
-	}
+	task.Dir = filepath.Dir(cfgPath)
+	task.Out = LogWriter(logger.Info)
+	task.Err = LogWriter(logger.Error)
 
 	ctx := context.Background()
-	cfg.Run(ctx, filepath.Dir(*cfgPath))
+	if task.Cmd != "" {
+		go task.RunForever(ctx)
+	}
+	go task.RunTasks(ctx)
 	<-ctx.Done()
 }
