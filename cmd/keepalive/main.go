@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Drelf2018/alive"
 	"github.com/Drelf2018/webhook/utils"
@@ -78,13 +79,17 @@ func main() {
 		panic(err)
 	}
 
-	var task alive.Task
+	task := alive.Task{
+		MergeThreshold: 100 * time.Millisecond,
+		FlushTimeout:   time.Second,
+	}
+
 	err = yaml.Unmarshal(data, &task)
 	if err != nil {
 		panic(err)
 	}
 
-	if len(task.Tasks) == 0 {
+	if task.Cmd == "" && len(task.Tasks) == 0 {
 		return
 	}
 
@@ -102,7 +107,7 @@ func main() {
 	}
 	logger.AddHook(hook)
 
-	task.Dir = filepath.Dir(cfgPath)
+	task.Dir = filepath.Join(filepath.Dir(cfgPath), task.Dir)
 	task.Out = LogWriter(logger.Info)
 	task.Err = LogWriter(logger.Error)
 

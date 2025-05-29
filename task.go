@@ -70,6 +70,14 @@ type Task struct {
 	FlushTimeout time.Duration `yaml:"-" json:"-" toml:"-"`
 }
 
+// 模板输出
+func (t *Task) Fprint(w io.Writer, s string) (n int, err error) {
+	if w == nil || t.Format == "" {
+		return 0, nil
+	}
+	return fmt.Fprintf(w, t.Format, strings.TrimRight(enc.ConvertString(s), "\r\n"))
+}
+
 // 任务输出包装器
 func (t *Task) WriterWrapper(ctx context.Context, w io.Writer) io.Writer {
 	if w == nil || t.Format == "" {
@@ -79,7 +87,7 @@ func (t *Task) WriterWrapper(ctx context.Context, w io.Writer) io.Writer {
 	chw := make(ChanWriter, 100*t.FlushTimeout/time.Second) // 每秒 100 条消息的缓冲应该够用了吧
 	printf := func() {
 		if buf.Len() != 0 {
-			fmt.Fprintf(w, t.Format, strings.TrimRight(enc.ConvertString(buf.String()), "\r\n"))
+			t.Fprint(w, buf.String())
 			buf.Reset()
 		}
 	}
@@ -147,19 +155,19 @@ func (t Task) RunForever(ctx context.Context) {
 	if t.Format != "" {
 		tmpl, err := tmpl.Parse(t.Format)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("alive: parse format %q error: %w", t.Format, err))
 		}
 		buf := &bytes.Buffer{}
 		err = tmpl.Execute(buf, t)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("alive: parse format %q error: %w", t.Format, err))
 		}
 		t.Format = buf.String()
 	}
 	for {
 		err := t.RunWithContext(ctx)
-		if err != nil && t.Err != nil && t.Format != "" {
-			fmt.Fprintf(t.Err, t.Format, strings.TrimRight(enc.ConvertString(err.Error()), "\r\n"))
+		if err != nil {
+			t.Fprint(t.Err, err.Error())
 		}
 		if t.Interval < 0 {
 			break
@@ -170,7 +178,6 @@ func (t Task) RunForever(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			timer.Stop()
 		}
 	}
 }
@@ -178,6 +185,7 @@ func (t Task) RunForever(ctx context.Context) {
 // 运行子任务
 func (t *Task) RunTasks(ctx context.Context) {
 	for _, task := range t.Tasks {
+		task := task // 私募了 goroutine
 		if task.Delay > 0 {
 			time.Sleep(time.Duration(1000*task.Delay) * time.Millisecond)
 		}
@@ -186,8 +194,12 @@ func (t *Task) RunTasks(ctx context.Context) {
 		if task.Format == "" {
 			task.Format = t.Format
 		}
-		task.Out = t.Out
-		task.Err = t.Err
+		if task.Out == nil {
+			task.Out = t.Out
+		}
+		if task.Err == nil {
+			task.Err = t.Err
+		}
 		if task.MergeThreshold == 0 {
 			task.MergeThreshold = t.MergeThreshold
 		}
